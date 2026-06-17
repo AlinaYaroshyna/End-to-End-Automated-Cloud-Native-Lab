@@ -12,7 +12,10 @@ pipeline {
         stage('Distribute to Workers (Ansible)') {
             steps {
                 echo 'Uruchamiam Ansible, aby wysłać obraz na węzły...'
-                sh 'ansible-playbook -i ansible/inventory.ini ansible/playbooks/05-deploy-local-image.yml -u ubuntu'
+                sh '''
+                export ANSIBLE_HOST_KEY_CHECKING=False
+                ansible-playbook -i ansible/inventory.ini ansible/playbooks/05-deploy-local-image.yml -u ubuntu --private-key /home/lin/.ssh/id_ed25519
+                '''
             }
         }
 
