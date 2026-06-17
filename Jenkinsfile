@@ -5,7 +5,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 echo 'Rozpoczynam budowanie nowego obrazu aplikacji...'
-                sh 'docker build -t lab-app:dev .'
+                sh 'docker build -t lab-app:dev ./app'
             }
         }
 
