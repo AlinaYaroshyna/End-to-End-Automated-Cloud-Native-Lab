@@ -14,7 +14,7 @@ pipeline {
                 echo 'Uruchamiam Ansible, aby wysłać obraz na węzły...'
                 sh '''
                 export ANSIBLE_HOST_KEY_CHECKING=False
-                ansible-playbook -i ansible/inventory.ini ansible/playbooks/05-deploy-local-image.yml -u ubuntu --private-key /home/lin/.ssh/id_ed25519
+                ansible-playbook -i ansible/inventory.ini ansible/playbooks/05-deploy-local-image.yml -u ubuntu --private-key /home/lin/.ssh/id_ed25519 -vvv
                 '''
             }
         }
