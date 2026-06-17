@@ -8,7 +8,21 @@ pipeline {
                 sh 'docker build -t lab-app:dev ./app'
             }
         }
+        
+        stage('Distribute to Workers (Ansible)') {
+            steps {
+                echo 'Zapisuję obraz na dysku Jenkinsa...'
+                // Zwróć uwagę na ścieżkę pliku .tar i nazwę obrazu - dostosuj je do swoich!
+                sh 'docker save -o /tmp/lab-app.tar lab-app:dev'
 
+                echo 'Uruchamiam Ansible, aby wysłać obraz na węzły...'
+                sh '''
+                export ANSIBLE_HOST_KEY_CHECKING=False
+                ansible-playbook -i ansible/inventory.ini ansible/playbooks/05-deploy-local-image.yml -u ubuntu --private-key /home/lin/.ssh/id_ed25519 -vvv
+                '''
+            }
+        }
+        
         stage('Distribute to Workers (Ansible)') {
             steps {
                 echo 'Uruchamiam Ansible, aby wysłać obraz na węzły...'
