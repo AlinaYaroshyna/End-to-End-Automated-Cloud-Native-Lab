@@ -9,7 +9,7 @@
   tasks:
     - name: Copy image tarball to worker nodes
       copy:
-        src: "{{ tar_file }}"
+        src: "/tmp/{{ tar_file }}"
         dest: "/tmp/{{ tar_file }}"
 
     - name: Import image into containerd on workers
