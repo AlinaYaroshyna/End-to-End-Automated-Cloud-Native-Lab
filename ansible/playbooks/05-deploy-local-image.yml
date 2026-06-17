@@ -9,9 +9,10 @@
   tasks:
     - name: Save Docker image locally (Runs on your host)
       delegate_to: localhost
-      become: no
       run_once: true
       command: "docker save -o {{ tar_file }} {{ image_name }}"
+      connection: local
+      become: false
 
     - name: Copy image tarball to worker nodes
       copy:
