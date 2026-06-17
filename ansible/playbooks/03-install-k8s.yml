@@ -1,0 +1,177 @@
+- name: Instalacja containerd, kubeadm, kubelet, kubectl na wszystkich nodach
+  hosts: k8s_nodes
+  become: true
+  tasks:
+    - name: Załaduj wymagane moduły jądra
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Trwale włącz moduły jądra
+      copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Skonfiguruj parametry sysctl wymagane przez Kubernetes
+      copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward                 = 1
+
+    - name: Zastosuj sysctl
+      command: sysctl --system
+      changed_when: false
+
+    - name: Zainstaluj containerd
+      apt:
+        name: containerd
+        state: present
+        update_cache: true
+
+    - name: Upewnij się, że /etc/containerd jest czystym katalogiem
+      file:
+        path: /etc/containerd
+        state: absent # Najpierw usuwamy wszystko co tam jest (plik lub zły folder)
+
+    - name: Stwórz katalog /etc/containerd
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Pobierz domyślną konfigurację containerd
+      command: containerd config default
+      register: containerd_default_config
+      changed_when: false
+
+    - name: Zapisz domyślną konfigurację containerd
+      copy:
+        dest: /etc/containerd/config.toml
+        content: "{{ containerd_default_config.stdout }}"
+        mode: '0644'
+      notify: restart containerd
+
+    - name: Ustaw SystemdCgroup = true w containerd
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+      notify: restart containerd
+
+    - name: Dodaj klucz GPG repozytorium Kubernetes
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key
+        dest: /tmp/k8s-release.key
+        mode: '0644'
+
+    - name: Stwórz katalog keyrings
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Zaimportuj klucz GPG do keyring
+      shell: cat /tmp/k8s-release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Dodaj repozytorium APT Kubernetes
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /"
+        filename: kubernetes
+        state: present
+
+    - name: Zainstaluj kubelet, kubeadm, kubectl
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: true
+
+    - name: Zablokuj automatyczne aktualizacje tych pakietów (apt hold)
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+  handlers:
+    - name: restart containerd
+      service:
+        name: containerd
+        state: restarted
+        enabled: true
+
+- name: Inicjalizacja klastra na node master
+  hosts: k8s_master
+  become: true
+  tasks:
+    - name: Sprawdź czy klaster jest już zainicjalizowany
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: k8s_init_check
+
+    - name: Zainicjuj klaster Kubernetes (kubeadm init)
+      command: >
+        kubeadm init
+        --pod-network-cidr=10.244.0.0/16
+        --apiserver-advertise-address={{ ansible_default_ipv4.address }}
+      when: not k8s_init_check.stat.exists
+      register: kubeadm_init_result
+
+    - name: Stwórz katalog .kube dla użytkownika ubuntu
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Skopiuj kubeconfig dla użytkownika ubuntu
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        remote_src: true
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    - name: Zainstaluj sieć CNI (Flannel)
+      become_user: ubuntu
+      command: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      when: not k8s_init_check.stat.exists
+
+    - name: Wygeneruj komendę join dla workerów
+      command: kubeadm token create --print-join-command
+      register: join_command_output
+
+    - name: Udostępnij komendę join innym hostom w tym przebiegu
+      add_host:
+        name: "join_command_holder"
+        kubeadm_join_command: "{{ join_command_output.stdout }}"
+
+- name: Dołączenie workerów do klastra
+  hosts: k8s_workers
+  become: true
+  tasks:
+    - name: Sprawdź czy worker jest już w klastrze
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: worker_join_check
+
+    - name: Dołącz worker do klastra (kubeadm join)
+      command: "{{ hostvars['join_command_holder']['kubeadm_join_command'] }}"
+      when: not worker_join_check.stat.exists

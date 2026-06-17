@@ -1,0 +1,92 @@
+---
+- name: Hardening systemu operacyjnego na węzłach K8s
+  hosts: k8s_nodes
+  become: true
+
+  tasks:
+    - name: Zaktualizuj cache apt i zainstaluj aktualizacje bezpieczeństwa
+      apt:
+        update_cache: true
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Zainstaluj podstawowe pakiety bezpieczeństwa
+      apt:
+        name:
+          - ufw
+          - fail2ban
+          - chrony
+          - unattended-upgrades
+        state: present
+
+    - name: Ustaw strefę czasową na UTC
+      community.general.timezone:
+        name: UTC
+
+    - name: Wyłącz logowanie root po SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: restart sshd
+
+    - name: Wyłącz logowanie hasłem (tylko klucze SSH)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: restart sshd
+
+    - name: Ustaw domyślną politykę UFW - blokuj ruch przychodzący
+      community.general.ufw:
+        policy: deny
+        direction: incoming
+
+    - name: Zezwól na SSH
+      community.general.ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Zezwól na K8s API server (tylko master)
+      community.general.ufw:
+        rule: allow
+        port: '6443'
+        proto: tcp
+      when: "'k8s_master' in group_names"
+
+    - name: Zezwól na porty wewnętrzne klastra (etcd, kubelet, NodePort range)
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "2379:2380"
+        - "10250:10255"
+        - "30000:32767"
+
+    - name: Włącz UFW
+      community.general.ufw:
+        state: enabled
+
+    - name: Uruchom i włącz fail2ban
+      service:
+        name: fail2ban
+        state: started
+        enabled: true
+
+    - name: Wyłącz swap (wymagane przez kubeadm)
+      command: swapoff -a
+      changed_when: false
+
+    - name: Usuń wpisy swap z /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        regexp: '\sswap\s'
+        state: absent
+
+  handlers:
+    - name: restart sshd
+      service:
+        name: ssh
+        state: restarted

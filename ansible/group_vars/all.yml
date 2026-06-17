@@ -1,0 +1,43 @@
+---
+# Katalogi libvirt
+images_dir: /var/lib/libvirt/images
+seeds_dir: "{{ images_dir }}/seeds"
+
+# Obraz bazowy (Ubuntu cloud image). Pobierz go najpierw na hoście:
+#   sudo mkdir -p /var/lib/libvirt/images/base
+#   sudo wget https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img \
+#        -O /var/lib/libvirt/images/base/ubuntu-22.04-base.img
+base_image: /var/lib/libvirt/images/base/ubuntu-22.04-base.img
+
+# Nazwa sieci libvirt. "default" to wbudowana sieć NAT (192.168.122.0/24).
+# Jeśli wolisz bridge, zmień na "br0" i dostosuj network-config.j2.
+libvirt_network: default
+
+ssh_public_key_path: "{{ lookup('env','HOME') }}/.ssh/id_ed25519.pub"
+ssh_public_key: "{{ lookup('file', ssh_public_key_path) }}"
+
+netmask_cidr: 24
+gateway: 192.168.122.1
+dns_server: 8.8.8.8
+
+vms:
+  - name: k8s-master
+    role: master
+    memory_mb: 4096
+    vcpus: 2
+    disk_gb: 20
+    ip: 192.168.122.10
+
+  - name: k8s-worker1
+    role: worker
+    memory_mb: 4096
+    vcpus: 2
+    disk_gb: 20
+    ip: 192.168.122.11
+
+  - name: k8s-worker2
+    role: worker
+    memory_mb: 4096
+    vcpus: 2
+    disk_gb: 20
+    ip: 192.168.122.12

@@ -1,0 +1,8 @@
+version: 2
+ethernets:
+  enp1s0:
+    dhcp4: false
+    addresses: [{{ vm.ip }}/{{ netmask_cidr }}]
+    gateway4: {{ gateway }}
+    nameservers:
+      addresses: [{{ dns_server }}]

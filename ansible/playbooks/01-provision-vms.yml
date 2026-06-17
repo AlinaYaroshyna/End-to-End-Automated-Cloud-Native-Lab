@@ -1,0 +1,142 @@
+---
+- name: Provision KVM virtual machines for K8s lab
+  hosts: hypervisor
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+    - name: Zainstaluj wymagane pakiety hypervisora
+      apt:
+        name:
+          - qemu-kvm
+          - libvirt-daemon-system
+          - libvirt-clients
+          - virtinst
+          - cloud-image-utils
+          - genisoimage
+        state: present
+        update_cache: true
+
+    - name: Upewnij się, że sieć libvirt "{{ libvirt_network }}" jest aktywna
+      command: virsh net-start {{ libvirt_network }}
+      register: net_start_result
+      changed_when: net_start_result.rc == 0
+      failed_when: net_start_result.rc != 0 and 'already active' not in net_start_result.stderr
+
+    - name: Ustaw autostart sieci "{{ libvirt_network }}" (przetrwa restart hosta)
+      command: virsh net-autostart {{ libvirt_network }}
+      changed_when: false
+      failed_when: false
+
+    - name: Stwórz katalog dla seed images (cloud-init ISO)
+      file:
+        path: "{{ seeds_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Sprawdź czy obraz bazowy istnieje
+      stat:
+        path: "{{ base_image }}"
+      register: base_image_check
+
+    - name: Przerwij, jeśli brak obrazu bazowego
+      fail:
+        msg: "Brak obrazu bazowego {{ base_image }}. Pobierz go najpierw - patrz README.md."
+      when: not base_image_check.stat.exists
+
+    - name: Stwórz dysk każdej VM jako COW na bazie obrazu bazowego
+      command: >
+        qemu-img create -f qcow2 -F qcow2
+        -b {{ base_image }}
+        {{ images_dir }}/{{ item.name }}.qcow2
+        {{ item.disk_gb }}G
+      args:
+        creates: "{{ images_dir }}/{{ item.name }}.qcow2"
+      loop: "{{ vms }}"
+
+    - name: Wygeneruj user-data dla każdej VM
+      template:
+        src: ../templates/user-data.j2
+        dest: "{{ seeds_dir }}/{{ vm.name }}-user-data"
+        mode: '0644'
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Wygeneruj meta-data dla każdej VM
+      template:
+        src: ../templates/meta-data.j2
+        dest: "{{ seeds_dir }}/{{ vm.name }}-meta-data"
+        mode: '0644'
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Wygeneruj network-config dla każdej VM
+      template:
+        src: ../templates/network-config.j2
+        dest: "{{ seeds_dir }}/{{ vm.name }}-network-config"
+        mode: '0644'
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Zbuduj ISO cloud-init (seed) dla każdej VM
+      command: >
+        cloud-localds
+        --network-config={{ seeds_dir }}/{{ item.name }}-network-config
+        {{ seeds_dir }}/{{ item.name }}-seed.iso
+        {{ seeds_dir }}/{{ item.name }}-user-data
+        {{ seeds_dir }}/{{ item.name }}-meta-data
+      args:
+        creates: "{{ seeds_dir }}/{{ item.name }}-seed.iso"
+      loop: "{{ vms }}"
+
+    - name: Sprawdź czy domena libvirt już istnieje
+      command: virsh dominfo {{ vm.name }}
+      register: dom_check
+      failed_when: false
+      changed_when: false
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Utwórz i wystartuj domeny KVM (virt-install)
+      command: >
+        virt-install
+        --name {{ check_result.vm.name }}
+        --memory {{ check_result.vm.memory_mb }}
+        --vcpus {{ check_result.vm.vcpus }}
+        --disk path={{ images_dir }}/{{ check_result.vm.name }}.qcow2,format=qcow2
+        --disk path={{ seeds_dir }}/{{ check_result.vm.name }}-seed.iso,device=cdrom
+        --network network={{ libvirt_network }}
+        --os-variant ubuntu22.04
+        --import
+        --noautoconsole
+      when: "'failed to get domain' in check_result.stderr or 'Domain not found' in check_result.stderr"
+      loop: "{{ dom_check.results }}"
+      loop_control:
+        loop_var: check_result
+
+    - name: Sprawdź aktualny stan każdej domeny (running/shut off)
+      command: virsh domstate {{ item.name }}
+      register: dom_state
+      changed_when: false
+      failed_when: false
+      loop: "{{ vms }}"
+
+    - name: Wystartuj domenę, jeśli istnieje ale jest zatrzymana
+      command: virsh start {{ dom_state_item.item.name }}
+      when: "'shut off' in dom_state_item.stdout"
+      loop: "{{ dom_state.results }}"
+      loop_control:
+        loop_var: dom_state_item
+
+    - name: Poczekaj, aż każda VM odpowie po SSH
+      wait_for:
+        host: "{{ item.ip }}"
+        port: 22
+        timeout: 180
+        sleep: 5
+      loop: "{{ vms }}"
